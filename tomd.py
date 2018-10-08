@@ -1,5 +1,4 @@
 # coding: utf-8
-
 import re
 import os
 import warnings
@@ -98,6 +97,10 @@ class Element:
         if self.is_block:
             self.parse_inline()
 
+
+    #################################################
+    #this function is value of this class
+    #################################################
     def __str__(self):
         wrapper = MARKDOWN.get(self.tag)
         self._result = '{}{}{}'.format(wrapper[0], self.content, wrapper[1])
@@ -134,9 +137,6 @@ class Element:
             self.content = self.content.replace('<hr/>', '\n---\n')
             self.content = self.content.replace('<br/>', '')
 
-        if self.tag == "table":  # for removing tbody
-            self.content = re.sub(INLINE_ELEMENTS['tbody'], '\g<1>', self.content)
-
         INLINE_ELEMENTS_LIST_KEYS = list(INLINE_ELEMENTS.keys())
         INLINE_ELEMENTS_LIST_KEYS.sort()
         for tag in INLINE_ELEMENTS_LIST_KEYS:
@@ -161,11 +161,6 @@ class Element:
             elif self.tag == 'tr' and tag == 'td':
                 self.content = re.sub(pattern, '|\g<1>|', self.content.replace('\n', ''))
                 self.content = self.content.replace("||", "|")  # end of column also needs a pipe
-            elif self.tag == 'table' and tag == 'td':
-                self.content = re.sub(pattern, '|\g<1>|', self.content)
-                self.content = self.content.replace("||", "|")  # end of column also needs a pipe
-                self.content = self.content.replace('|\n\n', '|\n')  # replace double new line
-                self.construct_table()
             else:
                 wrapper = MARKDOWN.get(tag)
                 if tag == "strong":
@@ -177,40 +172,31 @@ class Element:
             # focusing on div, add new line if not there (and if content is long enough)
             self.content += '\n'
 
-    def construct_table(self):
-        # this function, after self.content has gained | for table entries,
-        # adds the |---| in markdown to create a proper table
-
-        temp = self.content.split('\n', 3)
-        for elt in temp:
-            if elt != "":
-                count = elt.count("|")  # count number of pipes
-                break
-        pipe = "\n|"  # beginning \n for safety
-        for i in range(count - 1):
-            pipe += "---|"
-        pipe += "\n"
-        self.content = pipe + pipe + self.content + "\n"  # TODO: column titles?
-        self.content = self.content.replace('|\n\n', '|\n')  # replace double new line
-        self.content = self.content.replace("<br/>\n", "<br/>")  # end of column also needs a pipe
 
 
 class Tomd:
-    def __init__(self, html='', folder='', file='', options=None):
+    def __init__(self, html='', folder='', file=''):
         self.html = html  # actual data
         self.folder = folder
         self.file = file
-        self.options = options  # haven't been implemented yet
-        self._markdown = self.convert(self.html, self.options)
+        self._markdown = self.convert(self.html)
 
-    def convert(self, html="", options=None):
+    def convert(self, html=""):
         if html == "":
             html = self.html
+
+        #############del \t\n
+        html = re.sub("\s+",'',html)
+        #############
+
         # main function here
         elements = []
+
         for tag, pattern in BlOCK_ELEMENTS.items():
+
             for m in re.finditer(pattern, html, re.I | re.S | re.M):
-                # now m contains the pattern without the tag
+                # it there's no such a tag in html, it won't occur
+
                 element = Element(start_pos=m.start(),
                                   end_pos=m.end(),
                                   content=''.join(m.groups()),
@@ -225,7 +211,12 @@ class Tomd:
                         elements.remove(e)
                 if can_append:
                     elements.append(element)
+
+        ################
+        #If it's not sorted, the ouput will be randomly shown in disorder.
         elements.sort(key=lambda element: element.start_pos)
+        ################
+
         self._markdown = ''.join([str(e) for e in elements])
 
         for index, element in enumerate(DELETE_ELEMENTS):
@@ -234,7 +225,7 @@ class Tomd:
 
     @property
     def markdown(self):
-        self.convert(self.html, self.options)
+        self.convert(self.html)
         return self._markdown
 
     def export(self, folder=False):
