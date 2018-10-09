@@ -1,8 +1,9 @@
 # coding: utf-8
+
 import re
 import os
 import warnings
-
+from bs4 import BeautifulSoup as bs
 __all__ = ['Tomd', 'convert']
 
 MARKDOWN = {
@@ -29,11 +30,6 @@ MARKDOWN = {
     'i': ('*', '*'),
     'del': ('~~', '~~'),
     'hr': ('\n---', '\n\n'),
-    'thead': ('\n', '|------\n'),
-    'tbody': ('\n', '\n'),
-    'td': ('|', ''),
-    'th': ('|', ''),
-    'tr': ('', '\n'),
     'table': ('', '\n'),
     'e_p': ('', '\n')
 }
@@ -52,15 +48,11 @@ BlOCK_ELEMENTS = {
     'block_code': '<pre.*?><code.*?>(.*?)</code></pre>',
     'p': '<p\s.*?>(.*?)</p>',
     'p_with_out_class': '<p>(.*?)</p>',
-    'thead': '<thead.*?>(.*?)</thead>',
-    'tr': '<tr.*?>(.*?)</tr>'
+    'table': '<table>(.*?)</table>',
 }
 
 
 INLINE_ELEMENTS = {
-    'td': '<td.*?>((.|\n)*?)</td>',  # td element may span lines
-    'tr': '<tr.*?>((.|\n)*?)</tr>',
-    'th': '<th.*?>(.*?)</th>',
     'b': '<b.*?>(.*?)</b>',
     'i': '<i.*?>(.*?)</i>',
     'del': '<del.*?>(.*?)</del>',
@@ -77,7 +69,6 @@ INLINE_ELEMENTS = {
     'a': '<a.*?href="(.*?)".*?>(.*?)</a>',
     'em': '<em.*?>(.*?)</em>',
     'strong': '<strong.*?>(\s*)(.*?)(\s*)</strong>',
-    'tbody': '<tbody.*?>((.|\n)*)</tbody>',
 }
 
 DELETE_ELEMENTS = ['<span.*?>', '</span>', '<div.*?>', '</div>', '<br clear="none"/>', '<center.*?>', '</center>']
@@ -94,13 +85,13 @@ class Element:
         self.folder = folder
         self._result = None
 
-        if self.is_block:
+        if self.tag == "table":
+            self.make_table()
+        else:
             self.parse_inline()
 
 
-    #################################################
-    #this function is value of this class
-    #################################################
+
     def __str__(self):
         wrapper = MARKDOWN.get(self.tag)
         self._result = '{}{}{}'.format(wrapper[0], self.content, wrapper[1])
@@ -137,6 +128,9 @@ class Element:
             self.content = self.content.replace('<hr/>', '\n---\n')
             self.content = self.content.replace('<br/>', '')
 
+        if self.tag == "table":  # for removing tbody
+            self.content = re.sub(INLINE_ELEMENTS['tbody'], '\g<1>', self.content)
+
         INLINE_ELEMENTS_LIST_KEYS = list(INLINE_ELEMENTS.keys())
         INLINE_ELEMENTS_LIST_KEYS.sort()
         for tag in INLINE_ELEMENTS_LIST_KEYS:
@@ -161,6 +155,11 @@ class Element:
             elif self.tag == 'tr' and tag == 'td':
                 self.content = re.sub(pattern, '|\g<1>|', self.content.replace('\n', ''))
                 self.content = self.content.replace("||", "|")  # end of column also needs a pipe
+            elif self.tag == 'table' and tag == 'td':
+                self.content = re.sub(pattern, '|\g<1>|', self.content)
+                self.content = self.content.replace("||", "|")  # end of column also needs a pipe
+                self.content = self.content.replace('|\n\n', '|\n')  # replace double new line
+                self.construct_table()
             else:
                 wrapper = MARKDOWN.get(tag)
                 if tag == "strong":
@@ -173,29 +172,76 @@ class Element:
             self.content += '\n'
 
 
+    def make_table(self):
+        obj = bs("<table>"+self.content+"</table>",'html.parser')
+        table = obj.table
+        ############head
+        ############The first row of table is always the head of table
+        header = table.tr.children
+        valid_header_children = [child.text for child in header if "Tag" in str(type(child))]
+        header_txt = ("").join(["|"+child for child in valid_header_children ])+"\n"
+        header_bar = ("").join(["|--" for _ in range(len(valid_header_children ))])+"\n"
+
+        #############body
+        #############The except for the first row of the table, every rows in tbody
+        tbody_trs=((table.findAll("tr")[1:]))
+        tr_containers = ""
+
+        for tr in tbody_trs:
+            td_container=""
+
+            for td in tr.children:
+                if not "Tag" in str(type(td)):
+                    continue
+
+                td_container+="|"+td.text.strip()
+
+            tr_containers += td_container + "\n"
+            td_container = ""
+
+
+        md_table = header_txt + header_bar + tr_containers
+        self.content = md_table
+
+
+
+
+
+
+    def construct_table(self):
+        # this function, after self.content has gained | for table entries,
+        # adds the |---| in markdown to create a proper table
+
+        temp = self.content.split('\n', 3)
+        for elt in temp:
+            if elt != "":
+                count = elt.count("|")  # count number of pipes
+                break
+        pipe = "\n|"  # beginning \n for safety
+        for i in range(count - 1):
+            pipe += "---|"
+        pipe += "\n"
+        self.content = pipe + pipe + self.content + "\n"  # TODO: column titles?
+        self.content = self.content.replace('|\n\n', '|\n')  # replace double new line
+        self.content = self.content.replace("<br/>\n", "<br/>")  # end of column also needs a pipe
+
 
 class Tomd:
-    def __init__(self, html='', folder='', file=''):
+    def __init__(self, html='', folder='', file='', options=None):
         self.html = html  # actual data
         self.folder = folder
         self.file = file
-        self._markdown = self.convert(self.html)
+        self.options = options  # haven't been implemented yet
+        self._markdown = self.convert(self.html, self.options)
 
-    def convert(self, html=""):
+    def convert(self, html="", options=None):
         if html == "":
             html = self.html
-
-        #############del \t\n
-        html = re.sub("\s+",'',html)
-        #############
-
         # main function here
         elements = []
-
         for tag, pattern in BlOCK_ELEMENTS.items():
-
             for m in re.finditer(pattern, html, re.I | re.S | re.M):
-                # it there's no such a tag in html, it won't occur
+                # now m contains the pattern without the tag
 
                 element = Element(start_pos=m.start(),
                                   end_pos=m.end(),
@@ -203,6 +249,7 @@ class Tomd:
                                   tag=tag,
                                   folder=self.folder,
                                   is_block=True)
+
                 can_append = True
                 for e in elements:
                     if e.start_pos < m.start() and e.end_pos > m.end():
@@ -211,12 +258,7 @@ class Tomd:
                         elements.remove(e)
                 if can_append:
                     elements.append(element)
-
-        ################
-        #If it's not sorted, the ouput will be randomly shown in disorder.
         elements.sort(key=lambda element: element.start_pos)
-        ################
-
         self._markdown = ''.join([str(e) for e in elements])
 
         for index, element in enumerate(DELETE_ELEMENTS):
@@ -225,7 +267,7 @@ class Tomd:
 
     @property
     def markdown(self):
-        self.convert(self.html)
+        self.convert(self.html, self.options)
         return self._markdown
 
     def export(self, folder=False):
